@@ -39,6 +39,20 @@ interface Crack {
 
 type AshPhase = "growing" | "wobbling" | "falling";
 
+interface SmokeRing {
+  x: number; y: number;
+  vx: number; vy: number;
+  radiusX: number; radiusY: number;
+  maxRadiusX: number;
+  thickness: number;
+  alpha: number;
+  age: number; maxAge: number;
+  wobblePhase: number;
+  wobbleSpeed: number;
+  rotation: number;
+  rotSpeed: number;
+}
+
 interface ChatBubble {
   id: string;
   x: number; y: number;
@@ -68,6 +82,7 @@ interface Sim {
   ashCracks: Crack[];
   particles: Particle[];
   frags: AshFrag[];
+  smokeRings: SmokeRing[];
   flickTarget: number;
   flickVal: number;
   flickNextMs: number;
@@ -128,6 +143,28 @@ function emitSmoke(s: Sim, ey: number, puff: boolean): void {
       drift: rnd(0.2, 0.7) * (puff ? 1.9 : 1),
     });
   }
+}
+
+/** Emit a single smoke ring from the exact centre of the cigarette tip */
+function emitSmokeRing(s: Sim, ey: number): void {
+  const originY = ey - s.ashLen - CIG_R - 4;
+  s.smokeRings.push({
+    x: CIG_CX,
+    y: originY,
+    vx: 0,
+    vy: -0.85,
+    radiusX: CIG_R * 0.6,
+    radiusY: CIG_R * 0.22,
+    maxRadiusX: 55,
+    thickness: 4.5,
+    alpha: 0.7,
+    age: 0,
+    maxAge: 130,
+    wobblePhase: rnd(0, Math.PI * 2),
+    wobbleSpeed: 0.03,
+    rotation: 0,
+    rotSpeed: 0,
+  });
 }
 
 /** Spawn ash fragments that fall away from the tip of the column */
@@ -191,110 +228,216 @@ function drawBackground(ctx: CanvasRenderingContext2D, s: Sim, ey: number) {
 function drawCigarette(ctx: CanvasRenderingContext2D, s: Sim) {
   const ey      = getEmberY(s);
   const ashTopY = ey - s.ashLen;
+  const ELLIPSE_RY = CIG_R * 0.35; // vertical radius of the elliptical caps
 
-  /* ── Horizontal gradient: cylindrical shading left→centre→right ─────── */
-  const cylGrad = () => {
+  /* ── Helper: cylindrical shading gradient left→centre→right ─────── */
+  const cylGrad = (baseR: number, baseG: number, baseB: number, boost: number = 0) => {
     const g = ctx.createLinearGradient(CIG_CX - CIG_R, 0, CIG_CX + CIG_R, 0);
-    g.addColorStop(0,    "#bfbfb7");
-    g.addColorStop(0.18, "#e6e6de");
-    g.addColorStop(0.50, "#fefefe");
-    g.addColorStop(0.82, "#e6e6de");
-    g.addColorStop(1,    "#bfbfb7");
+    const clr = (r: number, gc: number, b: number) => `rgb(${r},${gc},${b})`;
+    const d = 40; // darkening at edges
+    g.addColorStop(0,    clr(baseR - d - 10, baseG - d - 10, baseB - d - 10));
+    g.addColorStop(0.08, clr(baseR - d, baseG - d, baseB - d));
+    g.addColorStop(0.25, clr(baseR - 8 + boost, baseG - 8 + boost, baseB - 8 + boost));
+    g.addColorStop(0.42, clr(baseR + boost, baseG + boost, baseB + boost));
+    g.addColorStop(0.50, clr(Math.min(255, baseR + 12 + boost), Math.min(255, baseG + 12 + boost), Math.min(255, baseB + 12 + boost)));
+    g.addColorStop(0.58, clr(baseR + boost, baseG + boost, baseB + boost));
+    g.addColorStop(0.75, clr(baseR - 8 + boost, baseG - 8 + boost, baseB - 8 + boost));
+    g.addColorStop(0.92, clr(baseR - d, baseG - d, baseB - d));
+    g.addColorStop(1,    clr(baseR - d - 10, baseG - d - 10, baseB - d - 10));
     return g;
   };
 
-  /* ── Unburned paper body ─────────────────────────────────────────────── */
+  /* ── Unburned paper body (3D cylinder with elliptical cap) ──────── */
   const paperTop = s.lit ? ey : TIP_Y;
   const paperH   = FIL_Y - paperTop;
 
   if (paperH > 0) {
-    ctx.fillStyle = cylGrad();
-
-    // Drawn flat top/bottom instead of rounded top cap
+    // Main body — cylindrical shading (off-white paper)
+    ctx.fillStyle = cylGrad(235, 232, 222, 0);
     ctx.fillRect(CIG_CX - CIG_R, paperTop, CIG_R * 2, paperH);
 
-    // Cylindrical left/right edge shadows
-    ctx.fillStyle = "rgba(0,0,0,0.09)";
-    ctx.fillRect(CIG_CX - CIG_R,         paperTop, 3.5, paperH);
-    ctx.fillRect(CIG_CX + CIG_R - 3.5,   paperTop, 3.5, paperH);
+    // Soft drop shadow on left & right edges (3D depth)
+    const shadowL = ctx.createLinearGradient(CIG_CX - CIG_R - 3, 0, CIG_CX - CIG_R + 5, 0);
+    shadowL.addColorStop(0, "rgba(0,0,0,0.22)");
+    shadowL.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = shadowL;
+    ctx.fillRect(CIG_CX - CIG_R - 3, paperTop, 8, paperH);
 
-    // Highlight stripe (top-left of cylinder)
-    ctx.fillStyle = "rgba(255,255,255,0.28)";
-    const hlTop = paperTop;
-    ctx.fillRect(CIG_CX - CIG_R + 4, hlTop, 5, FIL_Y - hlTop);
+    const shadowR = ctx.createLinearGradient(CIG_CX + CIG_R - 5, 0, CIG_CX + CIG_R + 3, 0);
+    shadowR.addColorStop(0, "rgba(0,0,0,0)");
+    shadowR.addColorStop(1, "rgba(0,0,0,0.22)");
+    ctx.fillStyle = shadowR;
+    ctx.fillRect(CIG_CX + CIG_R - 5, paperTop, 8, paperH);
 
-    // Paper seam lines
-    ctx.strokeStyle = "rgba(165,160,145,0.2)";
-    ctx.lineWidth = 0.5;
-    ctx.beginPath(); ctx.moveTo(CIG_CX - CIG_R, paperTop); ctx.lineTo(CIG_CX - CIG_R, FIL_Y); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(CIG_CX + CIG_R, paperTop); ctx.lineTo(CIG_CX + CIG_R, FIL_Y); ctx.stroke();
-  }
+    // Specular highlight strip (shifted left like real lighting)
+    const hlG = ctx.createLinearGradient(CIG_CX - CIG_R + 3, 0, CIG_CX - CIG_R + 12, 0);
+    hlG.addColorStop(0, "rgba(255,255,255,0)");
+    hlG.addColorStop(0.3, "rgba(255,255,255,0.32)");
+    hlG.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = hlG;
+    ctx.fillRect(CIG_CX - CIG_R + 3, paperTop, 9, paperH);
 
-  /* ── Filter (flat bottom cap) ────────────────────────────────────────── */
-  {
-    const fg = ctx.createLinearGradient(CIG_CX - CIG_R, 0, CIG_CX + CIG_R, 0);
-    fg.addColorStop(0,    "#7a4c2c");
-    fg.addColorStop(0.2,  "#ae7848");
-    fg.addColorStop(0.5,  "#ce9666");
-    fg.addColorStop(0.8,  "#ae7848");
-    fg.addColorStop(1,    "#7a4c2c");
-    ctx.fillStyle = fg;
-
-    // Draw as a flat rectangle instead of rounded cap
-    ctx.fillRect(CIG_CX - CIG_R, FIL_Y, CIG_R * 2, FIL_EY - FIL_Y);
-
-    // Cork horizontal texture lines
-    ctx.strokeStyle = "rgba(48,20,5,0.18)";
-    ctx.lineWidth = 0.65;
-    for (let y = FIL_Y + 4; y < FIL_EY; y += 4) {
+    // Paper grain texture — very fine horizontal lines
+    ctx.strokeStyle = "rgba(180,175,160,0.09)";
+    ctx.lineWidth = 0.4;
+    for (let y = paperTop + 3; y < FIL_Y; y += 3) {
       ctx.beginPath();
-      ctx.moveTo(CIG_CX - CIG_R + 4, y);
-      ctx.lineTo(CIG_CX + CIG_R - 4, y);
+      ctx.moveTo(CIG_CX - CIG_R + 1, y + Math.sin(y * 0.7) * 0.3);
+      ctx.lineTo(CIG_CX + CIG_R - 1, y + Math.sin(y * 0.7 + 1) * 0.3);
       ctx.stroke();
     }
 
-    // Filter separator band
-    ctx.strokeStyle = "rgba(36,14,4,0.72)";
-    ctx.lineWidth = 1.8;
+    // Paper seam — faint vertical line down one side (like the real seam)
+    ctx.strokeStyle = "rgba(160,155,140,0.18)";
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(CIG_CX + CIG_R * 0.65, paperTop);
+    ctx.lineTo(CIG_CX + CIG_R * 0.65, FIL_Y);
+    ctx.stroke();
+
+    // Elliptical top cap (3D look — visible when unlit or when there's no ash)
+    if (!s.lit) {
+      ctx.save();
+      ctx.fillStyle = "#e8e4da";
+      ctx.beginPath();
+      ctx.ellipse(CIG_CX, paperTop, CIG_R, ELLIPSE_RY, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Tobacco fill visible inside the top
+      ctx.fillStyle = "#8b6914";
+      ctx.beginPath();
+      ctx.ellipse(CIG_CX, paperTop, CIG_R - 2, ELLIPSE_RY - 1.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // Tobacco specks
+      ctx.fillStyle = "rgba(60,35,5,0.4)";
+      for (let i = 0; i < 12; i++) {
+        const angle = rnd(0, Math.PI * 2);
+        const dist = rnd(0, CIG_R - 4);
+        const sx = CIG_CX + Math.cos(angle) * dist * 0.85;
+        const sy = paperTop + Math.sin(angle) * dist * (ELLIPSE_RY / CIG_R) * 0.7;
+        ctx.fillRect(sx - 0.8, sy - 0.4, rnd(1, 2.5), rnd(0.5, 1.2));
+      }
+      ctx.restore();
+    }
+  }
+
+  /* ── Filter (3D cylindrical with gold bands) ────────────────────── */
+  {
+    const filterH = FIL_EY - FIL_Y;
+    // Main filter body — cylindrical cork shading
+    ctx.fillStyle = cylGrad(178, 120, 62, 0);
+    ctx.fillRect(CIG_CX - CIG_R, FIL_Y, CIG_R * 2, filterH);
+
+    // Cork texture — wavy horizontal lines for organic look
+    ctx.strokeStyle = "rgba(90,50,15,0.12)";
+    ctx.lineWidth = 0.5;
+    for (let y = FIL_Y + 2; y < FIL_EY; y += 2.5) {
+      ctx.beginPath();
+      ctx.moveTo(CIG_CX - CIG_R + 2, y);
+      for (let x = CIG_CX - CIG_R + 2; x <= CIG_CX + CIG_R - 2; x += 4) {
+        ctx.lineTo(x, y + Math.sin(x * 0.5 + y * 0.3) * 0.6);
+      }
+      ctx.stroke();
+    }
+    // Speckle dots on cork
+    ctx.fillStyle = "rgba(60,30,8,0.08)";
+    for (let i = 0; i < 30; i++) {
+      const dx = rnd(CIG_CX - CIG_R + 2, CIG_CX + CIG_R - 2);
+      const dy = rnd(FIL_Y + 2, FIL_EY - 2);
+      ctx.beginPath();
+      ctx.arc(dx, dy, rnd(0.3, 0.8), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── Gold double-band (like Marlboro/classic cigarette) ──────
+    const bandY = FIL_Y + 2;
+    const bandH = 8;
+    const bandGap = 3;
+    for (let b = 0; b < 2; b++) {
+      const by = bandY + b * (bandH + bandGap);
+      const bg = ctx.createLinearGradient(CIG_CX - CIG_R, 0, CIG_CX + CIG_R, 0);
+      bg.addColorStop(0,    "#8a6e28");
+      bg.addColorStop(0.15, "#c9a84c");
+      bg.addColorStop(0.35, "#e8cc6e");
+      bg.addColorStop(0.5,  "#f0d878");
+      bg.addColorStop(0.65, "#e8cc6e");
+      bg.addColorStop(0.85, "#c9a84c");
+      bg.addColorStop(1,    "#8a6e28");
+      ctx.fillStyle = bg;
+      ctx.fillRect(CIG_CX - CIG_R, by, CIG_R * 2, bandH);
+      // Top and bottom hairline on band
+      ctx.strokeStyle = "rgba(100,75,20,0.4)";
+      ctx.lineWidth = 0.5;
+      ctx.beginPath(); ctx.moveTo(CIG_CX - CIG_R, by); ctx.lineTo(CIG_CX + CIG_R, by); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(CIG_CX - CIG_R, by + bandH); ctx.lineTo(CIG_CX + CIG_R, by + bandH); ctx.stroke();
+    }
+
+    // Filter-paper junction line (dark separator)
+    ctx.strokeStyle = "rgba(30,12,2,0.7)";
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(CIG_CX - CIG_R, FIL_Y);
     ctx.lineTo(CIG_CX + CIG_R, FIL_Y);
     ctx.stroke();
 
-    // Filter highlight
-    ctx.fillStyle = "rgba(255,195,135,0.13)";
-    ctx.fillRect(CIG_CX - CIG_R + 4, FIL_Y, 5, FIL_EY - FIL_Y);
+    // Specular highlight on filter
+    const fhlG = ctx.createLinearGradient(CIG_CX - CIG_R + 3, 0, CIG_CX - CIG_R + 11, 0);
+    fhlG.addColorStop(0, "rgba(255,220,160,0)");
+    fhlG.addColorStop(0.3, "rgba(255,220,160,0.18)");
+    fhlG.addColorStop(1, "rgba(255,220,160,0)");
+    ctx.fillStyle = fhlG;
+    ctx.fillRect(CIG_CX - CIG_R + 3, FIL_Y, 8, filterH);
+
+    // Elliptical bottom cap of filter
+    ctx.save();
+    ctx.fillStyle = cylGrad(165, 110, 55, -10);
+    ctx.beginPath();
+    ctx.ellipse(CIG_CX, FIL_EY, CIG_R, ELLIPSE_RY, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Inner ring
+    ctx.strokeStyle = "rgba(80,45,15,0.3)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.ellipse(CIG_CX, FIL_EY, CIG_R - 3, ELLIPSE_RY - 1.5, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
-  /* ── Ash column (sits ABOVE the ember, grows upward, max 5 px) ────────── */
+  /* ── Ash column (sits ABOVE the ember, grows upward) ────────────── */
   if (s.lit && s.ashLen > 0.2) {
     const aTop = ey - s.ashLen;
     const aLen = s.ashLen;
 
-    // Ash body
-    const ag = ctx.createLinearGradient(CIG_CX - CIG_R, 0, CIG_CX + CIG_R, 0);
-    ag.addColorStop(0,    "#828282");
-    ag.addColorStop(0.28, "#aeaeae");
-    ag.addColorStop(0.5,  "#c6c6c6");
-    ag.addColorStop(0.72, "#aeaeae");
-    ag.addColorStop(1,    "#828282");
-    ctx.fillStyle = ag;
+    // Ash body — cylindrical shading (grey tones)
+    ctx.fillStyle = cylGrad(170, 170, 170, 0);
     ctx.fillRect(CIG_CX - CIG_R, aTop, CIG_R * 2, aLen);
 
     // Edge shadows
-    ctx.fillStyle = "rgba(0,0,0,0.12)";
-    ctx.fillRect(CIG_CX - CIG_R,       aTop, 2,   aLen);
-    ctx.fillRect(CIG_CX + CIG_R - 2,   aTop, 2,   aLen);
+    ctx.fillStyle = "rgba(0,0,0,0.14)";
+    ctx.fillRect(CIG_CX - CIG_R, aTop, 2.5, aLen);
+    ctx.fillRect(CIG_CX + CIG_R - 2.5, aTop, 2.5, aLen);
 
-    // Free-end crumble cap (at the very top of ash column)
+    // Ash crack texture
+    ctx.strokeStyle = "rgba(60,60,60,0.15)";
+    ctx.lineWidth = 0.5;
+    for (const c of s.ashCracks) {
+      const cy = aTop + c.yFrac * aLen;
+      ctx.beginPath();
+      ctx.moveTo(CIG_CX + c.xOff, cy);
+      ctx.lineTo(CIG_CX + c.xOff + c.dx, cy + c.dy);
+      ctx.stroke();
+    }
+
+    // Free-end crumble ellipse cap (at the very top of ash column)
+    ctx.save();
     const capG = ctx.createRadialGradient(CIG_CX, aTop, 0, CIG_CX, aTop, CIG_R + 2);
-    capG.addColorStop(0,   "rgba(118,118,118,0.55)");
-    capG.addColorStop(0.6, "rgba(88,88,88,0.15)");
+    capG.addColorStop(0,   "rgba(140,140,140,0.6)");
+    capG.addColorStop(0.5, "rgba(110,110,110,0.25)");
     capG.addColorStop(1,   "rgba(0,0,0,0)");
     ctx.fillStyle = capG;
     ctx.beginPath();
-    ctx.arc(CIG_CX, aTop, CIG_R + 2, 0, Math.PI * 2);
+    ctx.ellipse(CIG_CX, aTop, CIG_R + 1, ELLIPSE_RY + 1, 0, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -303,50 +446,64 @@ function drawEmber(ctx: CanvasRenderingContext2D, s: Sim) {
   const ey = getEmberY(s);
   const f  = s.flickVal;
   const pb = 1 + s.puffPower * 0.48;
+  const ELLIPSE_RY = CIG_R * 0.35;
 
-  // 1. Small, soft heat glow around the tip (not too big, just a warm aura)
-  const g = ctx.createRadialGradient(CIG_CX, ey, CIG_R * 0.5, CIG_CX, ey, 28 * pb);
-  g.addColorStop(0, `rgba(255, 60, 0, ${0.35 * f * pb})`);
-  g.addColorStop(0.5, `rgba(200, 20, 0, ${0.15 * f})`);
+  // 1. Outer heat haze glow
+  const g = ctx.createRadialGradient(CIG_CX, ey, CIG_R * 0.3, CIG_CX, ey, 35 * pb);
+  g.addColorStop(0, `rgba(255, 70, 0, ${0.3 * f * pb})`);
+  g.addColorStop(0.4, `rgba(220, 30, 0, ${0.12 * f})`);
   g.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = g;
   ctx.beginPath();
-  ctx.arc(CIG_CX, ey, 28 * pb, 0, Math.PI * 2);
+  ctx.arc(CIG_CX, ey, 35 * pb, 0, Math.PI * 2);
   ctx.fill();
 
-  // 2. Draw the rectangular burning band over the tip of the cigarette (thinner band)
-  const rectH = 7 * pb; // total height of the rectangular fire band
+  // 2. Ember band — rectangular coal with 3D elliptical top edge
+  const rectH = 8 * pb;
   ctx.save();
   ctx.beginPath();
   ctx.rect(CIG_CX - CIG_R, ey - rectH / 2, CIG_R * 2, rectH);
-  ctx.closePath();
   ctx.clip();
 
-  // Inner gradient filling the rectangle (vertical gradient: light orange on top, dark orange on bottom)
-  const domeGrad = ctx.createLinearGradient(
-    0, ey - rectH / 2,
-    0, ey + rectH / 2
-  );
-  domeGrad.addColorStop(0, `rgba(255, 192, 128, ${0.95 * f})`); // light orange on top
-  domeGrad.addColorStop(0.5, `rgba(255, 128, 0, ${0.9 * f})`);   // medium orange
-  domeGrad.addColorStop(1.0, `rgba(180, 40, 0, ${0.85 * f})`);   // dark orange on bottom
-  ctx.fillStyle = domeGrad;
+  // Multi-stop coal gradient (white-hot center → orange → dark red edges)
+  const coalG = ctx.createLinearGradient(CIG_CX - CIG_R, 0, CIG_CX + CIG_R, 0);
+  coalG.addColorStop(0,    `rgba(120, 20, 0, ${0.7 * f})`);
+  coalG.addColorStop(0.2,  `rgba(200, 60, 0, ${0.85 * f})`);
+  coalG.addColorStop(0.35, `rgba(255, 140, 30, ${0.95 * f})`);
+  coalG.addColorStop(0.5,  `rgba(255, 200, 100, ${1.0 * f})`);
+  coalG.addColorStop(0.65, `rgba(255, 140, 30, ${0.95 * f})`);
+  coalG.addColorStop(0.8,  `rgba(200, 60, 0, ${0.85 * f})`);
+  coalG.addColorStop(1,    `rgba(120, 20, 0, ${0.7 * f})`);
+  ctx.fillStyle = coalG;
+  ctx.fillRect(CIG_CX - CIG_R, ey - rectH / 2, CIG_R * 2, rectH);
+
+  // Vertical gradient overlay (bright top → dark bottom like real ember)
+  const coalV = ctx.createLinearGradient(0, ey - rectH / 2, 0, ey + rectH / 2);
+  coalV.addColorStop(0, `rgba(255,220,150,${0.3 * f})`);
+  coalV.addColorStop(0.5, "rgba(0,0,0,0)");
+  coalV.addColorStop(1, `rgba(80,10,0,${0.3 * f})`);
+  ctx.fillStyle = coalV;
+  ctx.fillRect(CIG_CX - CIG_R, ey - rectH / 2, CIG_R * 2, rectH);
+  ctx.restore();
+
+  // 3. Elliptical ember top (the burning face visible from above)
+  ctx.save();
+  const emberTopG = ctx.createRadialGradient(CIG_CX, ey - rectH / 2, 0, CIG_CX, ey - rectH / 2, CIG_R);
+  emberTopG.addColorStop(0, `rgba(255,210,120,${0.6 * f * pb})`);
+  emberTopG.addColorStop(0.5, `rgba(255,100,10,${0.4 * f * pb})`);
+  emberTopG.addColorStop(1, `rgba(140,20,0,${0.15 * f})`);
+  ctx.fillStyle = emberTopG;
+  ctx.beginPath();
+  ctx.ellipse(CIG_CX, ey - rectH / 2, CIG_R, ELLIPSE_RY, 0, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
-  // 3. Glowing hot outer strokes (straight horizontal lines at the borders of the rectangular band)
-  ctx.strokeStyle = `rgba(180, 40, 0, ${0.9 * f})`; // dark orange on bottom border
-  ctx.lineWidth = 1.8 * pb;
+  // 4. Thin hot edge strokes
+  ctx.strokeStyle = `rgba(200, 50, 0, ${0.7 * f})`;
+  ctx.lineWidth = 1.2 * pb;
   ctx.beginPath();
   ctx.moveTo(CIG_CX - CIG_R, ey + rectH / 2);
   ctx.lineTo(CIG_CX + CIG_R, ey + rectH / 2);
-  ctx.stroke();
-
-  ctx.strokeStyle = `rgba(255, 192, 128, ${0.85 * f})`; // light orange on top border
-  ctx.lineWidth = 1.2 * pb;
-  ctx.beginPath();
-  ctx.moveTo(CIG_CX - CIG_R, ey - rectH / 2);
-  ctx.lineTo(CIG_CX + CIG_R, ey - rectH / 2);
   ctx.stroke();
 
   // 5. Ignition flash
@@ -379,6 +536,55 @@ function drawSmoke(ctx: CanvasRenderingContext2D, particles: Particle[]) {
     ctx.beginPath();
     ctx.arc(p.x, p.y, curR, 0, Math.PI * 2);
     ctx.fill();
+  }
+}
+
+/** Draw toroidal smoke rings — expanding ellipses that drift upward */
+function drawSmokeRings(ctx: CanvasRenderingContext2D, rings: SmokeRing[]) {
+  for (const r of rings) {
+    const t = r.age / r.maxAge;
+    // Opacity: fade in quickly, hold, then fade out
+    let alpha: number;
+    if (t < 0.08) {
+      alpha = (t / 0.08) * r.alpha;
+    } else if (t < 0.55) {
+      alpha = r.alpha * (1 - (t - 0.08) * 0.4);
+    } else {
+      alpha = r.alpha * (1 - t) * 1.8;
+    }
+    if (alpha < 0.005) continue;
+
+    const expand = 1 + t * ((r.maxRadiusX / r.radiusX) - 1);
+    const curRX = r.radiusX * expand;
+    const curRY = r.radiusY * expand * 0.85;
+    const curThick = r.thickness * (1 + t * 1.2);
+
+    ctx.save();
+    ctx.translate(r.x, r.y);
+    ctx.rotate(r.rotation);
+
+    // Outer glow
+    ctx.strokeStyle = `rgba(195,195,210,${alpha * 0.3})`;
+    ctx.lineWidth = curThick + 4;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, curRX + 2, curRY + 1, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Main ring body
+    ctx.strokeStyle = `rgba(210,210,225,${alpha})`;
+    ctx.lineWidth = curThick;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, curRX, curRY, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Inner highlight (top of torus)
+    ctx.strokeStyle = `rgba(235,235,245,${alpha * 0.5})`;
+    ctx.lineWidth = curThick * 0.4;
+    ctx.beginPath();
+    ctx.ellipse(0, -curThick * 0.15, curRX * 0.92, curRY * 0.88, 0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.restore();
   }
 }
 
@@ -521,12 +727,28 @@ function drawBubbles(ctx: CanvasRenderingContext2D, s: Sim) {
    COMPONENT
 ═══════════════════════════════════════════════════════════════════════════════ */
 
-export default function CigaretteAnimation() {
+interface CigaretteAnimationProps {
+  /** When true, the component is driven by external props instead of internal state */
+  controlled?: boolean;
+  /** External lit state (only used when controlled=true) */
+  controlledLit?: boolean;
+  /** External burn progress 0..1 (only used when controlled=true) */
+  controlledProgress?: number;
+  /** External puff power 0..1 (only used when controlled=true) */
+  externalPuffPower?: number;
+}
+
+export default function CigaretteAnimation({
+  controlled = false,
+  controlledLit = false,
+  controlledProgress = 0,
+  externalPuffPower = 0,
+}: CigaretteAnimationProps = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const simRef    = useRef<Sim>({
     lit: false, progress: 0, startMs: null, prevProgress: 0, done: false,
     ashLen: 0, ashPhase: "growing", wobAngle: 0, wobAmp: 0.015, ashCracks: [],
-    particles: [], frags: [], bubbles: [],
+    particles: [], frags: [], smokeRings: [], bubbles: [],
     flickTarget: 0.85, flickVal: 0.85, flickNextMs: 0,
     puffPower: 0, igniteFlash: 0,
   });
@@ -534,6 +756,14 @@ export default function CigaretteAnimation() {
   const [isLit, setIsLit] = useState(false);
   const [isDone, setIsDone] = useState(false);
   const [completedCount, setCompletedCount] = useState(0);
+
+  // Sync controlled props into sim
+  const controlledLitRef = useRef(controlledLit);
+  const controlledProgressRef = useRef(controlledProgress);
+  const externalPuffRef = useRef(externalPuffPower);
+  controlledLitRef.current = controlledLit;
+  controlledProgressRef.current = controlledProgress;
+  externalPuffRef.current = externalPuffPower;
 
   const handleSendMessage = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -616,7 +846,23 @@ export default function CigaretteAnimation() {
     if (!ctx)    { rafRef.current = requestAnimationFrame(loop); return; }
 
     /* 1 ── Burn progress ─────────────────────────────────────────────── */
-    if (s.lit && !s.done && s.startMs !== null) {
+    if (controlled) {
+      // In controlled mode, sync from external props
+      s.prevProgress = s.progress;
+      s.lit = controlledLitRef.current;
+      s.progress = controlledProgressRef.current;
+      s.done = s.progress >= 1;
+      // Apply external puff power additively
+      if (externalPuffRef.current > 0) {
+        s.puffPower = Math.max(s.puffPower, externalPuffRef.current);
+      }
+      // Auto-ignite if first time lit
+      if (s.lit && s.startMs === null) {
+        s.startMs = now;
+        s.igniteFlash = 1.0;
+        for (let i = 0; i < 8; i++) emitSmoke(s, TIP_Y, true);
+      }
+    } else if (s.lit && !s.done && s.startMs !== null) {
       s.prevProgress = s.progress;
       const elapsed = now - s.startMs;
       s.progress = clamp(elapsed / BURN_MS, 0, 1);
@@ -688,6 +934,18 @@ export default function CigaretteAnimation() {
     });
     if (s.particles.length > 90) s.particles.splice(0, s.particles.length - 90);
 
+    /* 6.5 ── Smoke ring physics ───────────────────────────────────────── */
+    s.smokeRings = s.smokeRings.filter(r => {
+      r.age++;
+      if (r.age >= r.maxAge) return false;
+      r.x += r.vx + Math.sin(r.wobblePhase + r.age * r.wobbleSpeed) * 0.25;
+      r.y += r.vy;
+      r.vy *= 0.997;  // slight deceleration
+      r.rotation += r.rotSpeed;
+      return true;
+    });
+    if (s.smokeRings.length > 15) s.smokeRings.splice(0, s.smokeRings.length - 15);
+
     /* 7 ── Fragment physics ───────────────────────────────────────────── */
     for (const f of s.frags) {
       if (f.dead) continue;
@@ -757,6 +1015,7 @@ export default function CigaretteAnimation() {
 
     /* 8 ── Draw ───────────────────────────────────────────────────────── */
     drawBackground(ctx, s, ey);
+    drawSmokeRings(ctx, s.smokeRings);    // rings drawn behind smoke
     drawSmoke(ctx, s.particles);          // smoke drawn behind the cigarette
     drawBubbles(ctx, s);                  // bubbles drawn behind the cigarette
     drawCigarette(ctx, s);
@@ -768,7 +1027,10 @@ export default function CigaretteAnimation() {
   }, []);
 
   /* ── POINTER (mouse + touch) ──────────────────────────────────────────── */
-  const handlePointer = useCallback((clientX: number, clientY: number) => {
+  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Core pointer handler — mode: "puff" = normal smoke, "ring" = single smoke ring */
+  const handlePointer = useCallback((clientX: number, clientY: number, mode: "puff" | "ring") => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -796,14 +1058,33 @@ export default function CigaretteAnimation() {
       for (let i = 0; i < 8; i++) emitSmoke(s, TIP_Y, true);
       setIsLit(true);
     } else if (s.lit) {
-      // Extra drag puff
-      s.puffPower = Math.min(1, s.puffPower + 0.82);
-      for (let i = 0; i < 5; i++) emitSmoke(s, ey, true);
+      if (mode === "ring") {
+        // Double-click/tap → single smoke ring only
+        emitSmokeRing(s, ey);
+      } else {
+        // Single click/tap → normal smoke puff
+        s.puffPower = Math.min(1, s.puffPower + 0.82);
+        for (let i = 0; i < 5; i++) emitSmoke(s, ey, true);
+      }
     }
   }, []);
 
   const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => handlePointer(e.clientX, e.clientY),
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      const { clientX, clientY } = e;
+      if (clickTimerRef.current !== null) {
+        // Second click within window → double-click → ring
+        clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
+        handlePointer(clientX, clientY, "ring");
+      } else {
+        // First click → wait to see if a second comes
+        clickTimerRef.current = setTimeout(() => {
+          clickTimerRef.current = null;
+          handlePointer(clientX, clientY, "puff");
+        }, 250);
+      }
+    },
     [handlePointer],
   );
 
@@ -811,7 +1092,18 @@ export default function CigaretteAnimation() {
     (e: React.TouchEvent<HTMLCanvasElement>) => {
       e.preventDefault();
       const t = e.changedTouches[0];
-      if (t) handlePointer(t.clientX, t.clientY);
+      if (!t) return;
+      const { clientX, clientY } = t;
+      if (clickTimerRef.current !== null) {
+        clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
+        handlePointer(clientX, clientY, "ring");
+      } else {
+        clickTimerRef.current = setTimeout(() => {
+          clickTimerRef.current = null;
+          handlePointer(clientX, clientY, "puff");
+        }, 250);
+      }
     },
     [handlePointer],
   );
@@ -829,6 +1121,7 @@ export default function CigaretteAnimation() {
     s.ashCracks = [];
     s.particles = [];
     s.frags = [];
+    s.smokeRings = [];
     s.puffPower = 0;
     s.igniteFlash = 0;
     s.bubbles = []; // Clear existing bubbles on reset
@@ -928,6 +1221,39 @@ export default function CigaretteAnimation() {
   }, [loop]);
 
   /* ── RENDER ───────────────────────────────────────────────────────────── */
+
+  // In controlled mode, just render the canvas with no UI overlays
+  if (controlled) {
+    return (
+      <div
+        style={{
+          position: "relative",
+          width: "100%",
+          height: "100%",
+          background: "#0c0c13",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          overflow: "hidden",
+        }}
+      >
+        <canvas
+          ref={canvasRef}
+          width={CW}
+          height={CH}
+          style={{
+            height: "100%",
+            width: "auto",
+            maxWidth: "100%",
+            display: "block",
+            touchAction: "none",
+          }}
+        />
+      </div>
+    );
+  }
+
+  // Standalone mode — full UI with chat input, badges, and overlays
   return (
     <div
       style={{
@@ -964,7 +1290,7 @@ export default function CigaretteAnimation() {
               background: "rgba(20, 20, 28, 0.8)",
               backdropFilter: "blur(14px)",
               border: "1px solid rgba(255, 110, 0, 0.22)",
-              borderRadius: "8px", // rounded-md
+              borderRadius: "8px",
               padding: "4px 4px 4px 10px",
               boxShadow: "0 6px 20px rgba(0, 0, 0, 0.7), inset 0 0 5px rgba(255, 110, 0, 0.04)",
               width: "100%",
@@ -973,7 +1299,7 @@ export default function CigaretteAnimation() {
             <input
               type="text"
               value={inputVal}
-              onChange={(e) => setInputVal(e.target.value.slice(0, 50))} // Ensure max 50 characters
+              onChange={(e) => setInputVal(e.target.value.slice(0, 50))}
               placeholder="Type a message..."
               maxLength={50}
               style={{
@@ -987,15 +1313,13 @@ export default function CigaretteAnimation() {
                 fontFamily: "system-ui, sans-serif",
               }}
             />
-
-            {/* Integrated Send Button inside the text box */}
             <button
               type="submit"
               style={{
                 background: "rgba(255, 100, 0, 0.16)",
                 border: "1px solid rgba(255, 100, 0, 0.35)",
                 color: "#ffc299",
-                borderRadius: "6px", // matching rounded-md/sm style
+                borderRadius: "6px",
                 padding: "6px 12px",
                 fontSize: "13px",
                 cursor: "pointer",
@@ -1017,15 +1341,7 @@ export default function CigaretteAnimation() {
               Send
             </button>
           </form>
-
-          {/* Character counter at the bottom of the text box */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end", // Align to bottom right
-              paddingRight: "6px",
-            }}
-          >
+          <div style={{ display: "flex", justifyContent: "flex-end", paddingRight: "6px" }}>
             <span
               style={{
                 fontSize: "11px",
@@ -1047,7 +1363,6 @@ export default function CigaretteAnimation() {
         onClick={handleClick}
         onTouchEnd={handleTouch}
         style={{
-          /* Scale to fit viewport — preserves aspect ratio */
           height: "100vh",
           width: "auto",
           maxWidth: "100vw",
@@ -1132,10 +1447,11 @@ export default function CigaretteAnimation() {
               e.currentTarget.style.borderColor = "rgba(255, 100, 0, 0.45)";
             }}
           >
-            Get a new cigarette
+            Get a new stick
           </button>
         </div>
       )}
     </div>
   );
 }
+
